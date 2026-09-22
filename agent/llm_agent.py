@@ -1,43 +1,38 @@
 import json
 import os
+from dataclasses import dataclass, field
+from typing import Any
 
-from dotenv import load_dotenv
 from openai import OpenAI
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv():
+        """Allow library imports before optional environment helpers are installed."""
+        return False
 
 from agent.toolkit import get_tools_spec, execute_tool
 from agent.state import AgentState
+from agent.prompt import SYSTEM_PROMPT, build_state_prompt
 
 
 load_dotenv()
 
 
+@dataclass
+class AgentResult:
+    reply: str
+    state: dict[str, Any]
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    speech: list[str] = field(default_factory=list)
+
+
 class LLMAgent:
-    def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url="https://maas.qianwenaiapi.com/compatible-mode/v1",
-        )
-
-        self.model = "qwen3.8-omni-flash"
-
-        self.system_prompt = """
-你是一个展厅导览机器人 Agent。
-
-你可以调用以下工具完成任务：
-- navigate_to：导航到指定展品
-- query_knowledge：查询展品介绍
-- speak：让机器人播报文本
-
-规则：
-1. 如果用户要求去某个展品，调用 navigate_to。
-2. 如果用户要求介绍某个展品，调用 query_knowledge。
-3. 查询到介绍内容后，如果需要对用户讲解，调用 speak。
-4. 如果是复合任务，例如“带我去展品3，然后介绍一下”，应按顺序完成多个工具调用。
-5. 不要假装工具执行成功，必须等待工具返回结果。
-6. 工具完成后，根据结果继续判断下一步。
-7. 如果用户说“这里”“这个展品”“刚才那个展品”，应结合当前机器人状态和历史对话判断具体指代。
-8. 如果用户询问已经参观过哪些展品，应优先参考 visited_pois。
-"""
+    def __init__(self, client=None, model: str | None = None):
+        self.client = client
+        self.model = model or os.getenv("LLM_MODEL", "qwen3.8-omni-flash")
+        self.system_prompt = SYSTEM_PROMPT
 
         # 结构化 Agent 状态
         self.state = AgentState()
@@ -49,6 +44,24 @@ class LLMAgent:
                 "content": self.system_prompt,
             }
         ]
+
+    def _get_client(self):
+        if self.client is None:
+            api_key = os.getenv("DASHSCOPE_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "DASHSCOPE_API_KEY is not configured. Add it to the .env file."
+                )
+
+            self.client = OpenAI(
+                api_key=api_key,
+                base_url=os.getenv(
+                    "LLM_BASE_URL",
+                    "https://maas.qianwenaiapi.com/compatible-mode/v1",
+                ),
+            )
+
+        return self.client
 
     def trim_memory(self, max_messages=12):
         """
@@ -78,17 +91,21 @@ class LLMAgent:
 
         state_message = {
             "role": "system",
-            "content": (
-                "当前机器人状态：\n"
-                f"current_poi={self.state.current_poi}\n"
-                f"visited_pois={self.state.visited_pois}\n"
-                f"status={self.state.status}"
+            "content": build_state_prompt(
+                self.state.current_poi,
+                self.state.visited_pois,
+                self.state.status,
             ),
         }
 
         return self.messages + [state_message]
 
     def handle(self, user_input: str) -> str:
+        return self.handle_detailed(user_input).reply
+
+    def handle_detailed(self, user_input: str) -> AgentResult:
+        tool_events = []
+
         # 保存当前用户输入
         self.messages.append(
             {
@@ -106,7 +123,7 @@ class LLMAgent:
             # 每轮都使用最新 AgentState
             request_messages = self.build_request_messages()
 
-            response = self.client.chat.completions.create(
+            response = self._get_client().chat.completions.create(
                 model=self.model,
                 messages=request_messages,
                 tools=get_tools_spec(),
@@ -130,7 +147,17 @@ class LLMAgent:
 
                 self.trim_memory()
 
-                return assistant_text
+                return AgentResult(
+                    reply=assistant_text,
+                    state=self.state.to_dict(),
+                    tool_calls=tool_events,
+                    speech=[
+                        event["arguments"]["text"]
+                        for event in tool_events
+                        if event["name"] == "speak"
+                        and event["result"].get("success")
+                    ],
+                )
 
             # 保存模型发起的 tool call
             self.messages.append(message)
@@ -157,6 +184,14 @@ class LLMAgent:
                 result = execute_tool(
                     tool_name,
                     arguments,
+                )
+
+                tool_events.append(
+                    {
+                        "name": tool_name,
+                        "arguments": arguments,
+                        "result": result,
+                    }
                 )
 
                 print(
@@ -192,4 +227,9 @@ class LLMAgent:
 
         self.state.set_status("idle")
 
-        return "任务执行超过最大轮数，已停止。"
+        return AgentResult(
+            reply="The task exceeded the maximum number of agent turns and was stopped.",
+            state=self.state.to_dict(),
+            tool_calls=tool_events,
+            speech=[],
+        )
