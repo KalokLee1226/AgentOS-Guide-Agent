@@ -8,7 +8,7 @@
 
 ## 当前版本
 
-**v0.1**
+**v0.2**
 
 目前已经完成：
 
@@ -23,6 +23,9 @@
 - Speech Mock Tool
 - FastAPI HTTP 服务
 - Agent 状态查询接口
+- 英文 System Prompt 与英文 Tool Schema
+- 面向文本、语音和机器人客户端的会话化 API
+- 可选的外部 TTS HTTP Adapter
 
 ---
 
@@ -279,6 +282,83 @@ Swagger API 页面：
 
 ## API 接口
 
+新接入请优先使用 `/v1/*`。每个用户或机器人应保存服务返回的 `session_id`，并在后续请求中重复传入，避免不同用户共享对话记忆。原有 `/chat` 和 `/state` 仍保留兼容。
+
+### POST /v1/chat
+
+供前端、机器人控制端或其他业务模块调用：
+
+```bash
+curl -X POST http://localhost:8000/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"带我去展品3，然后介绍一下","source":"robot"}'
+```
+
+第一次请求可省略 `session_id`。响应示例：
+
+```json
+{
+  "session_id": "624e905e-7ceb-45ba-8c1d-8122af96ef21",
+  "reply": "已经完成讲解。",
+  "speech": ["这里是具身智能展区……"],
+  "tool_calls": [
+    {
+      "name": "navigate_to",
+      "arguments": {"poi_id": "exhibit_3"},
+      "result": {"success": true, "poi_id": "exhibit_3", "status": "arrived"}
+    }
+  ],
+  "state": {
+    "current_poi": "exhibit_3",
+    "visited_pois": ["exhibit_3"],
+    "status": "idle"
+  }
+}
+```
+
+后续对话把响应中的 `session_id` 原样传回：
+
+```json
+{
+  "message": "再介绍一下这里",
+  "session_id": "624e905e-7ceb-45ba-8c1d-8122af96ef21",
+  "source": "text"
+}
+```
+
+### POST /v1/voice/transcripts
+
+语音模块完成 ASR 后，把最终识别文本传给 Agent：
+
+```bash
+curl -X POST http://localhost:8000/v1/voice/transcripts \
+  -H "Content-Type: application/json" \
+  -d '{"transcript":"带我去展品3，然后介绍一下"}'
+```
+
+语音同学可以读取响应中的 `speech` 数组并逐条交给 TTS。可直接参考 `examples/voice_client.py`。
+
+另一种接法是由 Agent 主动推送 TTS：在 `.env` 中配置：
+
+```dotenv
+SPEECH_SERVICE_URL=http://127.0.0.1:9000/tts
+SPEECH_SERVICE_TIMEOUT=10
+```
+
+此时 `speak` 工具会向该地址发送：
+
+```json
+{"text": "需要播报的文本"}
+```
+
+### GET /v1/sessions/{session_id}/state
+
+读取指定会话的机器人状态。
+
+### DELETE /v1/sessions/{session_id}
+
+结束会话并释放它的短期记忆。
+
 ### GET /
 
 检查 Agent 服务是否运行。
@@ -354,6 +434,8 @@ Agent 可能自动执行：
 在项目根目录创建 `.env`：
 
     DASHSCOPE_API_KEY=YOUR_API_KEY
+
+也可以复制 `.env.example`，其中还包含模型地址、模型名称和可选语音服务配置。
 
 `.env` 已加入 `.gitignore`。
 

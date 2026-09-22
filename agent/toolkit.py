@@ -8,13 +8,13 @@ TOOLS_SPEC = [
         "type": "function",
         "function": {
             "name": "navigate_to",
-            "description": "导航到指定展品位置。",
+            "description": "Navigate the robot to a specified exhibit.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "poi_id": {
                         "type": "string",
-                        "description": "展品ID，例如 exhibit_1"
+                        "description": "Exhibit ID, for example exhibit_1."
                     }
                 },
                 "required": ["poi_id"]
@@ -25,13 +25,13 @@ TOOLS_SPEC = [
         "type": "function",
         "function": {
             "name": "query_knowledge",
-            "description": "查询指定展品的介绍信息。",
+            "description": "Retrieve factual information about a specified exhibit.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "poi_id": {
                         "type": "string",
-                        "description": "展品ID，例如 exhibit_1"
+                        "description": "Exhibit ID, for example exhibit_1."
                     }
                 },
                 "required": ["poi_id"]
@@ -42,13 +42,13 @@ TOOLS_SPEC = [
         "type": "function",
         "function": {
             "name": "speak",
-            "description": "让机器人播报指定文本。",
+            "description": "Send visitor-facing text to the robot speech module.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "需要播报的文本"
+                        "description": "Natural, concise text for the robot to speak."
                     }
                 },
                 "required": ["text"]
@@ -75,7 +75,7 @@ def execute_tool(tool_name: str, arguments: dict) -> dict:
     if tool is None:
         return {
             "success": False,
-            "error": f"未知工具: {tool_name}"
+            "error": f"Unknown tool: {tool_name}"
         }
 
     try:
