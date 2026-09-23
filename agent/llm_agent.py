@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,7 +32,12 @@ class AgentResult:
 class LLMAgent:
     def __init__(self, client=None, model: str | None = None):
         self.client = client
-        self.model = model or os.getenv("LLM_MODEL", "qwen3.8-omni-flash")
+
+        self.model = model or os.getenv(
+            "LLM_MODEL",
+            "qwen3.8-omni-flash",
+        )
+
         self.system_prompt = SYSTEM_PROMPT
 
         # 结构化 Agent 状态
@@ -46,22 +52,66 @@ class LLMAgent:
         ]
 
     def _get_client(self):
+        """
+        创建 OpenAI-compatible 客户端。
+
+        云端模式：
+        - 使用 LLM_BASE_URL
+        - 使用 LLM_API_KEY 或 DASHSCOPE_API_KEY
+
+        本地模式：
+        - LLM_BASE_URL 指向 localhost / 127.0.0.1
+        - 如果没有真实 API Key，则自动使用 "local" 占位
+        """
+
         if self.client is None:
-            api_key = os.getenv("DASHSCOPE_API_KEY")
+            base_url = os.getenv(
+                "LLM_BASE_URL",
+                "https://maas.qianwenaiapi.com/compatible-mode/v1",
+            )
+
+            api_key = (
+                os.getenv("LLM_API_KEY")
+                or os.getenv("DASHSCOPE_API_KEY")
+            )
+
+            # 本地 OpenAI-compatible 服务通常不需要真实 API Key
             if not api_key:
-                raise RuntimeError(
-                    "DASHSCOPE_API_KEY is not configured. Add it to the .env file."
-                )
+                if (
+                    base_url.startswith("http://127.0.0.1")
+                    or base_url.startswith("http://localhost")
+                ):
+                    api_key = "local"
+                else:
+                    raise RuntimeError(
+                        "No LLM API key configured. "
+                        "Set LLM_API_KEY or DASHSCOPE_API_KEY in the .env file."
+                    )
 
             self.client = OpenAI(
                 api_key=api_key,
-                base_url=os.getenv(
-                    "LLM_BASE_URL",
-                    "https://maas.qianwenaiapi.com/compatible-mode/v1",
-                ),
+                base_url=base_url,
             )
 
         return self.client
+
+    def _clean_assistant_text(self, text: str) -> str:
+        """
+        清理部分本地推理模型输出中的 <think>...</think> 内容，
+        避免将模型内部思考文本直接展示给用户。
+        """
+
+        if not text:
+            return ""
+
+        cleaned = re.sub(
+            r"<think>.*?</think>",
+            "",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        return cleaned.strip()
 
     def trim_memory(self, max_messages=12):
         """
@@ -136,7 +186,9 @@ class LLMAgent:
             if not message.tool_calls:
                 self.state.set_status("idle")
 
-                assistant_text = message.content or ""
+                assistant_text = self._clean_assistant_text(
+                    message.content or ""
+                )
 
                 self.messages.append(
                     {
